@@ -57,4 +57,9 @@ The application follows a standard **RAG (Retrieval-Augmented Generation)** inge
 | *"Pink hoodies"* | **Relevant** | Matches `color: Pink` and `category: Clothing` via vector proximity. |
 | *"Something for the rain"* | **Semantic** | Finds descriptions containing "waterproof", "durable", or "winter" without exact keyword matches. |
 
-## 📂 Project Structure
+Summary of the "Stack"
+Input: Natural Language ("Pink Hoodie")
+Encoder: Transformer Model (BERT/MiniLM) \rightarrow Dense Vector \mathbb{R}^{384}
+Database: Vector Index (Points in Hyperspace)
+Query Engine: Linear Algebra (Dot Product / Cosine Similarity)
+Output: Ranked List of Semantic Matches
