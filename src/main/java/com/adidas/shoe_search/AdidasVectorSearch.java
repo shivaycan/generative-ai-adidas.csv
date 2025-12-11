@@ -17,9 +17,9 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.io.Reader;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class AdidasVectorSearch {
 
@@ -28,11 +28,10 @@ public class AdidasVectorSearch {
 
 		System.out.println("--- 1. Initializing Local AI Model ---");
 		EmbeddingModel embeddingModel = new AllMiniLmL6V2EmbeddingModel();
-
 		InMemoryEmbeddingStore<TextSegment> embeddingStore = new InMemoryEmbeddingStore<>();
 
-		System.out.println("--- 2. Loading CSV Data ---");
-		List<TextSegment> segments = loadCsvAsSegments(csvPath);
+		System.out.println("--- 2. Smart-Loading CSV Data ---");
+		List<TextSegment> segments = loadCsvAsSmartSegments(csvPath);
 
 		if (segments.isEmpty()) {
 			System.err.println("CRITICAL ERROR: Could not find 'adidas.csv'.");
@@ -43,12 +42,12 @@ public class AdidasVectorSearch {
 		List<Embedding> embeddings = embeddingModel.embedAll(segments).content();
 		embeddingStore.addAll(embeddings, segments);
 
-		// --- NEW: INTERACTIVE CHAT LOOP ---
+		// --- INTERACTIVE CHAT LOOP ---
 		java.util.Scanner scanner = new java.util.Scanner(System.in);
-		System.out.println("\n👟 VIBE SEARCH READY! (Type 'exit' to quit)");
+
 
 		while (true) {
-			System.out.print("\n>> Ask a question: ");
+			System.out.print("\n>> Search: ");
 			String queryText = scanner.nextLine();
 
 			if (queryText.equalsIgnoreCase("exit")) {
@@ -56,75 +55,95 @@ public class AdidasVectorSearch {
 				break;
 			}
 
-			// Embed the User's Question
+			// --- STEP 1: DETECT PRICE FILTER (The "Math" Part) ---
+			double maxPriceFilter = Double.MAX_VALUE;
+
+			// Regex to find "under 40", "below 100", "< 50"
+			Pattern pricePattern = Pattern.compile("(under|below|less than|<)\\s?(\\d+)");
+			Matcher matcher = pricePattern.matcher(queryText.toLowerCase());
+
+			if (matcher.find()) {
+				maxPriceFilter = Double.parseDouble(matcher.group(2));
+				System.out.println("   (Filtering for items cheaper than $" + maxPriceFilter + ")");
+			}
+
+			// --- STEP 2: VECTOR SEARCH (The "Vibe" Part) ---
 			Embedding queryEmbedding = embeddingModel.embed(queryText).content();
 
-			// Search
 			EmbeddingSearchResult<TextSegment> result = embeddingStore.search(
 					EmbeddingSearchRequest.builder()
 							.queryEmbedding(queryEmbedding)
-							.maxResults(3) // Top 3 results
+							.maxResults(15) // Fetch MORE results so we have room to filter
+							.minScore(0.5)
 							.build()
 			);
 
-			System.out.println("\n=== Results for: \"" + queryText + "\" ===\n");
+			// --- STEP 3: APPLY FILTER & PRINT ---
+			System.out.println("\n=== Results ===\n");
+			int count = 0;
+
 			for (EmbeddingMatch<TextSegment> match : result.matches()) {
-				printProductDetails(match.embedded().text());
+				// Check Price
+				double itemPrice = parsePrice(match.embedded().metadata().getString("price"));
+
+				if (itemPrice <= maxPriceFilter) {
+					printSmartProductDetails(match);
+					count++;
+				}
+
+				if (count >= 3) break; // Stop after finding 3 valid matches
+			}
+
+			if (count == 0) {
+				System.out.println("❌ No matches found within that price range.");
 			}
 		}
 	}
-	// --- CSV PARSING MAGIC ---
-	// --- CSV PARSING MAGIC (Updated for 2025) ---
-	private static List<TextSegment> loadCsvAsSegments(String csvPath) {
+
+	// --- HELPER: Turn "$40" string into 40.0 number ---
+	private static double parsePrice(String priceStr) {
+		if (priceStr == null || priceStr.isEmpty() || priceStr.equals("null")) return 99999.0;
+		try {
+			return Double.parseDouble(priceStr);
+		} catch (NumberFormatException e) {
+			return 99999.0; // If price is weird, put it at end of list
+		}
+	}
+
+	// --- SAME LOADING LOGIC AS BEFORE ---
+	private static List<TextSegment> loadCsvAsSmartSegments(String csvPath) {
 		List<TextSegment> segments = new ArrayList<>();
-
 		try (Reader reader = new FileReader(csvPath)) {
-			// 1. Configure the CSV Format using the new Builder
 			CSVFormat format = CSVFormat.DEFAULT.builder()
-					.setHeader()              // Automatically detect header
-					.setSkipHeaderRecord(true) // Don't treat the first row as data
-					.setIgnoreHeaderCase(true)
-					.setTrim(true)
-					.build();
+					.setHeader().setSkipHeaderRecord(true).setIgnoreHeaderCase(true).setTrim(true).build();
 
-			// 2. Parse
 			try (CSVParser csvParser = new CSVParser(reader, format)) {
 				for (CSVRecord row : csvParser) {
-					// Formatting: "key: value | key: value"
-					StringBuilder textBuilder = new StringBuilder();
-					Map<String, String> rowMap = row.toMap();
-					List<String> formattedParts = new ArrayList<>();
-
-					for (Map.Entry<String, String> entry : rowMap.entrySet()) {
-						formattedParts.add(entry.getKey() + ": " + entry.getValue());
-					}
-					String text = String.join(" | ", formattedParts);
-
+					String semanticText = String.format(
+							"Product: %s. Category: %s. Color: %s. Description: %s",
+							row.get("name"), row.get("category"), row.get("color"), row.get("description")
+					);
 					Metadata metadata = new Metadata();
-					metadata.add("row_index", String.valueOf(row.getRecordNumber()));
-					segments.add(TextSegment.from(text, metadata));
+					metadata.add("name", row.get("name"));
+					metadata.add("price", row.get("selling_price"));
+					metadata.add("currency", row.get("currency"));
+					metadata.add("rating", row.get("average_rating"));
+					metadata.add("url", row.get("url"));
+					segments.add(TextSegment.from(semanticText, metadata));
 				}
 			}
-
-		} catch (IOException e) {
-			System.err.println("Error reading CSV: " + e.getMessage());
-		}
+		} catch (IOException e) { System.err.println("Error: " + e.getMessage()); }
 		return segments;
 	}
-	// --- prints---
-	private static void printProductDetails(String pageContent) {
-		String[] dataItems = pageContent.split(" \\| ");
-		Map<String, String> keyValues = new HashMap<>();
-		for (String item : dataItems) {
-			if (item.contains(": ")) {
-				String[] parts = item.split(": ", 2);
-				keyValues.put(parts[0], parts[1]);
-			}
-		}
-		System.out.println("Shoes " + keyValues.getOrDefault("name", "Unknown Shoe"));
-		System.out.println("Money " + keyValues.getOrDefault("selling_price", "?") + " " + keyValues.getOrDefault("currency", ""));
-		System.out.println("star " + keyValues.getOrDefault("average_rating", "N/A") + " stars");
-		System.out.println("LINK " + keyValues.getOrDefault("url", "").substring(0, Math.min(keyValues.getOrDefault("url", "").length(), 40)) + "...");
-		System.out.println("-".repeat(50));
+
+	private static void printSmartProductDetails(EmbeddingMatch<TextSegment> match) {
+		Metadata m = match.embedded().metadata();
+		String price = m.getString("price");
+		if (price == null || price.equals("null") || price.isEmpty()) price = "N/A";
+
+		System.out.println("");
+		System.out.println(m.getString("name"));
+		System.out.println(price + " " + m.getString("currency") + "  •  " + m.getString("rating") + " Stars");
+		System.out.println("See details: " + m.getString("url"));
 	}
 }
