@@ -18,100 +18,101 @@ import java.io.IOException;
 import java.io.Reader;
 import java.util.ArrayList;
 import java.util.List;
+
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class AdidasVectorSearch {
 
+	// Tuning Parameters
+	private static final double MIN_RELEVANCE_SCORE = 0.60; // Increased threshold for higher quality
+	private static final int MAX_RESULTS_TO_FETCH = 25;     // Fetch more initially for better filtering capacity
+
 	public static void main(String[] args) {
 		String csvPath = "adidas.csv";
 
-		System.out.println("--- 1. Initializing Local AI Model ---");
+		System.out.println("--- 1. Initializing AI Model (Fine-tuned for retrieval) ---");
 		EmbeddingModel embeddingModel = new AllMiniLmL6V2EmbeddingModel();
 		InMemoryEmbeddingStore<TextSegment> embeddingStore = new InMemoryEmbeddingStore<>();
 
-		System.out.println("--- 2. Smart-Loading CSV Data ---");
-		List<TextSegment> segments = loadCsvAsSmartSegments(csvPath);
+		System.out.println("--- 2. Ingesting & Cleaning Data ---");
+		List<TextSegment> segments = loadAndCleanCsv(csvPath);
 
 		if (segments.isEmpty()) {
-			System.err.println("CRITICAL ERROR: Could not find 'adidas.csv'.");
+			System.err.println("CRITICAL: No data loaded. Check 'adidas.csv' path.");
 			return;
 		}
 
-		System.out.println("--- 3. Embedding " + segments.size() + " items... ---");
+		System.out.println("--- 3. Embedding " + segments.size() + " products... ---");
 		List<Embedding> embeddings = embeddingModel.embedAll(segments).content();
 		embeddingStore.addAll(embeddings, segments);
 
-		// --- INTERACTIVE CHAT LOOP ---
+		// --- CHAT LOOP ---
 		java.util.Scanner scanner = new java.util.Scanner(System.in);
-
+		System.out.println("\n✅ System Ready. Try: 'Men's running shoes under $100' or 'Blue soccer cleats for kids'");
 
 		while (true) {
 			System.out.print("\n>> Search: ");
-			String queryText = scanner.nextLine();
+			String rawQuery = scanner.nextLine();
 
-			if (queryText.equalsIgnoreCase("exit")) {
-				System.out.println("Bye! 👋");
-				break;
+			if (rawQuery.equalsIgnoreCase("exit")) break;
+
+			// --- STEP 1: INTENT EXTRACTION (The Logic Layer) ---
+			// We separate "What they want" (Vector) from "Constraints" (Filters)
+			SearchIntent intent = extractIntent(rawQuery);
+
+			if (intent.hasFilters()) {
+				System.out.printf("   [Filters Active] Price: <$%.0f | Gender: %s%n",
+						intent.maxPrice, intent.genderFilter);
 			}
 
-			// --- STEP 1: DETECT PRICE FILTER (The "Math" Part) ---
-			double maxPriceFilter = Double.MAX_VALUE;
-
-			// Regex to find "under 40", "below 100", "< 50"
-			Pattern pricePattern = Pattern.compile("(under|below|less than|<)\\s?(\\d+)");
-			Matcher matcher = pricePattern.matcher(queryText.toLowerCase());
-
-			if (matcher.find()) {
-				maxPriceFilter = Double.parseDouble(matcher.group(2));
-				System.out.println("   (Filtering for items cheaper than $" + maxPriceFilter + ")");
-			}
-
-			// --- STEP 2: VECTOR SEARCH (The "Vibe" Part) ---
-			Embedding queryEmbedding = embeddingModel.embed(queryText).content();
+			// --- STEP 2: SEMANTIC SEARCH (The AI Layer) ---
+			// We search using the 'cleaned' query (removing price/gender words) to focus AI on the product type
+			Embedding queryEmbedding = embeddingModel.embed(intent.semanticQuery).content();
 
 			EmbeddingSearchResult<TextSegment> result = embeddingStore.search(
 					EmbeddingSearchRequest.builder()
 							.queryEmbedding(queryEmbedding)
-							.maxResults(15) // Fetch MORE results so we have room to filter
-							.minScore(0.5)
+							.maxResults(MAX_RESULTS_TO_FETCH)
+							.minScore(MIN_RELEVANCE_SCORE)
 							.build()
 			);
 
-			// --- STEP 3: APPLY FILTER & PRINT ---
-			System.out.println("\n=== Results ===\n");
+			// --- STEP 3: HYBRID FILTERING ---
 			int count = 0;
+			System.out.println("\n=== Top Matches for: \"" + intent.semanticQuery + "\" ===\n");
 
 			for (EmbeddingMatch<TextSegment> match : result.matches()) {
-				// Check Price
-				double itemPrice = parsePrice(match.embedded().metadata().getString("price"));
+				Metadata m = match.embedded().metadata();
 
-				if (itemPrice <= maxPriceFilter) {
-					printSmartProductDetails(match);
-					count++;
+				// 1. Check Price Filter
+				double price = parseDoubleSafe(m.getString("price"));
+				if (price > intent.maxPrice) continue;
+
+				// 2. Check Gender Filter (if user specified one)
+				String productGender = m.getString("category").toLowerCase(); // e.g. "men's shoes"
+				String productName = m.getString("name").toLowerCase();
+
+				if (!intent.genderFilter.equals("ALL")) {
+					// If user wants Men, reject Women's specific items (and vice versa)
+					// We allow 'unisex' or items that don't specify.
+					if (intent.genderFilter.equals("MEN") && (productGender.contains("women") || productName.contains("women"))) continue;
+					if (intent.genderFilter.equals("WOMEN") && (productGender.contains("men") && !productGender.contains("women"))) continue;
 				}
 
-				if (count >= 3) break; // Stop after finding 3 valid matches
+				printProductCard(match, price);
+				count++;
+				if (count >= 3) break; // Limit display to top 3
 			}
 
 			if (count == 0) {
-				System.out.println("❌ No matches found within that price range.");
+				System.out.println("❌ No exact matches found. Try broadening your price range or query.");
 			}
 		}
 	}
 
-	// --- HELPER: Turn "$40" string into 40.0 number ---
-	private static double parsePrice(String priceStr) {
-		if (priceStr == null || priceStr.isEmpty() || priceStr.equals("null")) return 99999.0;
-		try {
-			return Double.parseDouble(priceStr);
-		} catch (NumberFormatException e) {
-			return 99999.0; // If price is weird, put it at end of list
-		}
-	}
-
-	// --- SAME LOADING LOGIC AS BEFORE ---
-	private static List<TextSegment> loadCsvAsSmartSegments(String csvPath) {
+	// --- ENHANCED DATA LOADING ---
+	private static List<TextSegment> loadAndCleanCsv(String csvPath) {
 		List<TextSegment> segments = new ArrayList<>();
 		try (Reader reader = new FileReader(csvPath)) {
 			CSVFormat format = CSVFormat.DEFAULT.builder()
@@ -119,31 +120,93 @@ public class AdidasVectorSearch {
 
 			try (CSVParser csvParser = new CSVParser(reader, format)) {
 				for (CSVRecord row : csvParser) {
+					// CLEANING: Remove HTML tags if description has them
+					String cleanDesc = row.get("description").replaceAll("<[^>]*>", " ");
+
+					// ENRICHMENT: Structure text for better embedding weight.
+					// Putting Name and Category first gives them higher priority in vector similarity.
 					String semanticText = String.format(
-							"Product: %s. Category: %s. Color: %s. Description: %s",
-							row.get("name"), row.get("category"), row.get("color"), row.get("description")
+							"%s %s. Color: %s. Details: %s",
+							row.get("name"),       // Important
+							row.get("category"),   // Important
+							row.get("color"),
+							cleanDesc
 					);
+
 					Metadata metadata = new Metadata();
 					metadata.add("name", row.get("name"));
+					metadata.add("category", row.get("category")); // Store category for filtering
 					metadata.add("price", row.get("selling_price"));
 					metadata.add("currency", row.get("currency"));
 					metadata.add("rating", row.get("average_rating"));
 					metadata.add("url", row.get("url"));
+
 					segments.add(TextSegment.from(semanticText, metadata));
 				}
 			}
-		} catch (IOException e) { System.err.println("Error: " + e.getMessage()); }
+		} catch (IOException e) { System.err.println("Error loading CSV: " + e.getMessage()); }
 		return segments;
 	}
 
-	private static void printSmartProductDetails(EmbeddingMatch<TextSegment> match) {
-		Metadata m = match.embedded().metadata();
-		String price = m.getString("price");
-		if (price == null || price.equals("null") || price.isEmpty()) price = "N/A";
+	// --- INTENT PARSING LOGIC ---
+	private static SearchIntent extractIntent(String query) {
+		String lowerQuery = query.toLowerCase();
+		double maxPrice = Double.MAX_VALUE;
+		String gender = "ALL";
 
-		System.out.println("");
-		System.out.println(m.getString("name"));
-		System.out.println(price + " " + m.getString("currency") + "  •  " + m.getString("rating") + " Stars");
-		System.out.println("See details: " + m.getString("url"));
+		// 1. Extract Price Limit
+		// Matches: "under 50", "below 100", "< 90"
+		Pattern pricePattern = Pattern.compile("(under|below|less than|<)\\s?(\\$?)(\\d+)");
+		Matcher priceMatcher = pricePattern.matcher(lowerQuery);
+		if (priceMatcher.find()) {
+			maxPrice = Double.parseDouble(priceMatcher.group(3));
+			// Remove the price phrase from query so it doesn't confuse the vector search
+			lowerQuery = lowerQuery.replace(priceMatcher.group(0), "");
+		}
+
+		// 2. Extract Gender
+		if (lowerQuery.contains("women") || lowerQuery.contains("ladies")) {
+			gender = "WOMEN";
+			lowerQuery = lowerQuery.replace("women", "").replace("ladies", "");
+		} else if (lowerQuery.contains("men") || lowerQuery.contains(" man ")) {
+			gender = "MEN";
+			lowerQuery = lowerQuery.replace("men", "").replace("man", "");
+		} else if (lowerQuery.contains("kid") || lowerQuery.contains("boy") || lowerQuery.contains("girl")) {
+			gender = "KIDS"; // You could implement specific logic for kids
+		}
+
+		// Clean up double spaces created by removals
+		String cleanQuery = lowerQuery.replaceAll("\\s+", " ").trim();
+		if (cleanQuery.isEmpty()) cleanQuery = "shoes"; // Fallback
+
+		return new SearchIntent(cleanQuery, maxPrice, gender);
+	}
+
+	// --- HELPER CLASSES & METHODS ---
+
+	// Simple container for our parsed query
+	static class SearchIntent {
+		String semanticQuery;
+		double maxPrice;
+		String genderFilter;
+
+		public SearchIntent(String q, double p, String g) {
+			this.semanticQuery = q; this.maxPrice = p; this.genderFilter = g;
+		}
+		boolean hasFilters() { return maxPrice != Double.MAX_VALUE || !genderFilter.equals("ALL"); }
+	}
+
+	private static void printProductCard(EmbeddingMatch<TextSegment> match, double price) {
+		Metadata m = match.embedded().metadata();
+		System.out.printf("👟 %s%n", m.getString("name"));
+		System.out.printf("   Score: %.2f | Price: $%.2f | Rating: %s⭐%n",
+				match.score(), price, m.getString("rating"));
+		System.out.println("   Link: " + m.getString("url"));
+		System.out.println("   -------------------------------------");
+	}
+
+	private static double parseDoubleSafe(String str) {
+		if (str == null || str.isEmpty() || str.equals("null")) return 99999.0;
+		try { return Double.parseDouble(str); } catch (NumberFormatException e) { return 99999.0; }
 	}
 }

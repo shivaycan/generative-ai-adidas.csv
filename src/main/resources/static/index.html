@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Adidas AI Search</title>
+    <style>
+        :root {
+            --primary: #000000;
+            --accent: #2e7d32; /* Adidas Green vibe */
+            --bg: #f5f5f5;
+            --card-bg: #ffffff;
+        }
+
+        body {
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            background-color: var(--bg);
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        /* Hero Section */
+        .hero {
+            width: 100%;
+            background: var(--primary);
+            color: white;
+            padding: 60px 20px;
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        h1 { margin: 0; font-size: 2.5rem; letter-spacing: -1px; }
+        p { color: #cccccc; margin-top: 10px; font-weight: 300; }
+
+        /* Search Bar */
+        .search-container {
+            position: relative;
+            max-width: 600px;
+            width: 90%;
+            margin: -30px auto 40px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            border-radius: 50px;
+        }
+
+        input {
+            width: 100%;
+            padding: 20px 30px;
+            border: none;
+            border-radius: 50px;
+            font-size: 1.1rem;
+            outline: none;
+        }
+
+        button {
+            position: absolute;
+            right: 5px;
+            top: 5px;
+            height: 50px;
+            width: 100px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 40px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+
+        button:hover { background: #333; }
+
+        /* Results Grid */
+        .results-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 20px;
+            width: 90%;
+            max-width: 1200px;
+            padding-bottom: 50px;
+        }
+
+        /* Product Card */
+        .card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            transition: transform 0.2s, box-shadow 0.2s;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1);
+        }
+
+        .card-img {
+            height: 200px;
+            background-color: #eee;
+            background-size: cover;
+            background-position: center;
+        }
+
+        .card-body { padding: 20px; flex-grow: 1; display: flex; flex-direction: column; }
+
+        .category { font-size: 0.8rem; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px;}
+        .title { font-size: 1.1rem; font-weight: 700; margin: 0 0 10px 0; color: #111; }
+        .footer { margin-top: auto; display: flex; justify-content: space-between; align-items: center; }
+        .price { font-size: 1.2rem; color: var(--accent); font-weight: bold; }
+        .rating { font-size: 0.9rem; color: #f39c12; }
+
+        /* Loading Animation */
+        .loader {
+            display: none;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #000;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+<div class="hero">
+    <h1>What are you looking for?</h1>
+    <p>AI-Powered Semantic Search</p>
+</div>
+
+<div class="search-container">
+    <input type="text" id="searchInput" placeholder="Try 'White running shoes under $50'..." onkeypress="handleEnter(event)">
+    <button onclick="performSearch()">Search</button>
+</div>
+
+<div class="loader" id="loader"></div>
+<div class="results-grid" id="resultsGrid"></div>
+
+<script>
+    async function performSearch() {
+        const query = document.getElementById('searchInput').value;
+        const grid = document.getElementById('resultsGrid');
+        const loader = document.getElementById('loader');
+
+        if (!query) return;
+
+        // UI Reset
+        grid.innerHTML = '';
+        loader.style.display = 'block';
+
+        try {
+            // Fetch from Java Backend
+            const response = await fetch(`http://localhost:8080/api/search?query=${encodeURIComponent(query)}`);
+            const products = await response.json();
+
+            loader.style.display = 'none';
+
+            if (products.length === 0) {
+                grid.innerHTML = '<p style="text-align:center; width:100%; color:#888;">No matches found.</p>';
+                return;
+            }
+
+            products.forEach(p => {
+                const card = document.createElement('div');
+                card.className = 'card';
+                card.onclick = () => window.open(p.link, '_blank'); // Click to go to Adidas site
+
+                card.innerHTML = `
+                    <div class="card-img" style="background-image: url('${p.image}')"></div>
+                    <div class="card-body">
+                        <span class="category">${p.category}</span>
+                        <h3 class="title">${p.name}</h3>
+                        <div class="footer">
+                            <span class="price">$${p.price}</span>
+                            <span class="rating">★ ${p.rating}</span>
+                        </div>
+                    </div>
+                `;
+                grid.appendChild(card);
+            });
+
+        } catch (error) {
+            console.error("Error:", error);
+            loader.style.display = 'none';
+            grid.innerHTML = '<p style="text-align:center; width:100%; color:red;">Connection Error. Is Java running?</p>';
+        }
+    }
+
+    function handleEnter(e) {
+        if (e.key === 'Enter') performSearch();
+    }
+</script>
+
+</body>
+</html>
