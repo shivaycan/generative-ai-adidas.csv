@@ -213,18 +213,3 @@ Multi-brand ingestion
 
 Recommendation and personalization layer
 
-👤 Author
-
-Shivay Garg
-Computer Science (AI / ML)
-
-
----
-
-If you want next, I can:
-- Convert this into a **Spring Boot API**
-- Refactor into **MCP client/server**
-- Add **FAISS / Redis**
-- Prepare an **interview explanation** for vector search & RAG
-
-Just say the word.
